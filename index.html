@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Farma Pro v10.19.6 - Functional Undo</title>
+    
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        :root { --primary: #0f172a; --accent: #2563eb; --bg: #f1f5f9; --inv: #4f46e5; --danger: #dc2626; --success: #10b981; --undo: #64748b; }
+        body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--primary); padding-bottom: 60px; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        .top-bar { background: var(--primary); color: white; padding: 15px; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; z-index: 1001; }
+        .top-bar.mod-inv { background: var(--inv); }
+        .container { padding: 10px; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .btn-group { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; flex-shrink: 0; scrollbar-width: none; }
+        .btn { padding: 12px 16px; border-radius: 10px; font-weight: bold; border: 1px solid #cbd5e1; background: white; font-size: 11px; white-space: nowrap; cursor: pointer; }
+        .btn-blue { background: var(--accent); color: white; border: none; }
+        .btn-undo { background: var(--undo); color: white; border: none; }
+        .search-box { margin-bottom: 12px; flex-shrink: 0; }
+        .search { width: 100%; padding: 14px; border: 2px solid var(--accent); border-radius: 12px; font-size: 18px; outline: none; box-sizing: border-box; }
+        .card { background: white; border-radius: 15px; border: 1px solid #cbd5e1; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .table-container { overflow: auto; flex: 1; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; min-width: 650px; table-layout: fixed; }
+        thead th { position: sticky; top: 0; z-index: 100; background: #f8fafc; padding: 12px; text-align: left; font-size: 10px; text-transform: uppercase; color: #64748b; border-bottom: 2px solid #e2e8f0; cursor: pointer; user-select: none; }
+        td { padding: 8px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+        .qty { width: 40px; text-align: center; border: 1.5px solid #cbd5e1; border-radius: 6px; padding: 6px 0; font-weight: bold; font-size: 14px; }
+        .price-input { width: 90%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; font-size: 13px; text-align: right; font-weight: bold; }
+        .exp-input { color: var(--danger) !important; font-size: 15px !important; font-weight: 800 !important; width: 100%; border: none; background: transparent; outline: none; }
+        .diff-tag { font-size: 12px; font-weight: 900; padding: 6px 8px; border-radius: 6px; white-space: nowrap; display: block; text-align: center; }
+        input.edit { width: 100%; border: none; background: transparent; font-size: 14px; outline: none; font-weight: 600; }
+        .minus { background: #fee2e2; color: var(--danger); }
+        .plus { background: #dcfce7; color: var(--success); }
+        .btn-mini { padding: 5px 8px; border-radius: 5px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="top-bar" id="mainBar">
+    <h1 style="font-size: 15px; margin:0">FARMA v10.19.6 📶</h1>
+    <button class="btn btn-blue" onclick="toggleMode()">MOD INVENTAR</button>
+</div>
+
+<div class="container">
+    <div class="btn-group" id="normalBtns">
+        <button class="btn btn-blue" onclick="addProd()">+ NOU</button>
+        <button class="btn btn-undo" id="undoBtnNormal" onclick="undoAction()">↩️ ÎNAPOI</button>
+        <button class="btn" onclick="exportExcel('Stoc')">📊 EXCEL</button>
+        <button class="btn" onclick="exportPDF()">📄 PDF</button>
+        <button class="btn" onclick="document.getElementById('fileXls').click()">📥 IMPORT</button>
+        <button class="btn" onclick="doBackup()">💾 BK</button>
+        <button class="btn" onclick="document.getElementById('fileRestore').click()">🔄 RS</button>
+    </div>
+
+    <div class="btn-group" id="invBtns" style="display:none">
+        <button class="btn btn-blue" onclick="addProd()">+ NOU</button>
+        <button class="btn btn-undo" id="undoBtnInv" onclick="undoAction()">↩️ ÎNAPOI</button>
+        <button class="btn btn-blue" style="background:#10b981" onclick="finalizeazaInventar()">✅ SALVEAZĂ</button>
+        <button class="btn" onclick="exportExcel('Inventar_Diferente')">📊 EXCEL</button>
+        <button class="btn" onclick="exportPDF()">📄 PDF</button>
+        <button class="btn" onclick="resetRaft()">🗑️ RAFT 0</button>
+    </div>
+
+    <div class="search-box">
+        <input type="text" id="search" class="search" placeholder="🔎 Căutare produs..." autocomplete="off">
+    </div>
+
+    <div class="card">
+        <div class="table-container" id="scrollContainer">
+            <table>
+                <thead id="tHead"></thead>
+                <tbody id="tBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<input type="file" id="fileXls" style="display:none" onchange="handleImportExcel(event)">
+<input type="file" id="fileRestore" style="display:none" onchange="restoreBackup(event)">
+
+<script>
+    const db = new Dexie("FarmaDB_V2026_Turbo");
+    db.version(1).stores({ produse: '++id, nume, cantitateInt, cantitateFrac, ambalaj, dataExpirare, fapticInt, fapticFrac, pret, ordine' });
+
+    let isInventory = false, dataCache = [], sortKey = 'ordine', sortDir = 'desc', visibleItems = 40;
+    let searchTimeout = null, historyStack = [];
+
+    async function loadCache() {
+        dataCache = await db.produse.toArray();
+        render();
+    }
+
+    document.getElementById('scrollContainer').addEventListener('scroll', e => {
+        if (e.target.scrollTop + e.target.clientHeight >= e.target.scrollHeight - 80) {
+            if (visibleItems < dataCache.length) { visibleItems += 30; render(); }
+        }
+    });
+
+    function clearZero(el) { if (el.value == "0" || el.value == "0.00") el.value = ""; }
+    function restoreZero(el, id, f) { if (el.value == "") { el.value = (f === 'pret' ? "0.00" : "0"); updateSilent(id, f, 0); } }
+
+    function formatDate(el, id) {
+        let v = el.value.replace(/\D/g, '').slice(0, 8);
+        if (v.length > 2 && v.length <= 4) v = v.slice(0, 2) + '/' + v.slice(2);
+        else if (v.length > 4) v = v.slice(0, 2) + '/' + v.slice(2, 4) + '/' + v.slice(4);
+        el.value = v; updateSilent(id, 'dataExpirare', v);
+    }
+
+    async function updateSilent(id, f, v) {
+        const val = (f==='nume'||f==='dataExpirare'?v:parseFloat(v)||0);
+        await db.produse.update(id, {[f]: val});
+        const p = dataCache.find(x => x.id === id); 
+        if(p) { p[f] = val; if(isInventory) fastCalcDiff(p); }
+    }
+
+    function fastCalcDiff(p) {
+        const div = document.getElementById(`diff-${p.id}`);
+        if(!div) return;
+        const sistTotal = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+        const fapTotal = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+        const diffTotal = fapTotal - sistTotal;
+        if (diffTotal === 0) { div.innerHTML = `<span class="diff-tag">0</span>`; return; }
+        const semn = diffTotal > 0 ? "+" : "";
+        div.innerHTML = `<span class="diff-tag ${diffTotal < 0 ? 'minus' : 'plus'}">${semn}${Math.trunc(diffTotal / p.ambalaj)} c. ${semn}${diffTotal % p.ambalaj} u.</span>`;
+    }
+
+    // --- LOGICA UNDO COMPLETĂ ---
+    async function addProd() { 
+        const n = { nume: "", cantitateInt: 0, cantitateFrac: 0, ambalaj: 30, dataExpirare: "", fapticInt: 0, fapticFrac: 0, pret: 0, ordine: Date.now() }; 
+        n.id = await db.produse.add(n); 
+        dataCache.unshift(n); 
+        historyStack.push({ type: 'create', data: n.id });
+        render(); 
+    }
+
+    async function duplicaProd(id) { 
+        const p = dataCache.find(x => x.id === id); 
+        const nou = {...p}; delete nou.id; nou.ordine = Date.now(); nou.fapticInt = 0; nou.fapticFrac = 0; 
+        nou.id = await db.produse.add(nou); 
+        dataCache.unshift(nou); 
+        historyStack.push({ type: 'create', data: nou.id });
+        render(); 
+    }
+
+    async function del(id) { 
+        if(confirm("Ștergi produsul?")) { 
+            const p = dataCache.find(x => x.id === id);
+            historyStack.push({ type: 'delete', data: {...p} });
+            await db.produse.delete(id); 
+            dataCache = dataCache.filter(x => x.id !== id); 
+            render(); 
+        } 
+    }
+
+    async function undoAction() {
+        if (historyStack.length === 0) {
+            alert("Nu există nicio acțiune de anulat!");
+            return;
+        }
+        const last = historyStack.pop();
+        if (last.type === 'create') {
+            await db.produse.delete(last.data);
+            dataCache = dataCache.filter(x => x.id !== last.data);
+        } else if (last.type === 'delete') {
+            const restored = last.data;
+            restored.id = await db.produse.add(restored);
+            dataCache.unshift(restored);
+        }
+        render();
+    }
+
+    // --- IMPORT / BACKUP / SORT ---
+    async function handleImportExcel(e) {
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            const wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'});
+            const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+            const mode = confirm("OK = ÎNLOCUIRE totală\nCANCEL = CUMULARE stoc existent");
+            if(mode) await db.produse.clear();
+            for(const row of json) {
+                const keys = Object.keys(row);
+                const find = k => row[keys.find(key => key.toLowerCase().includes(k))] || "";
+                const nume = String(find("nume") || find("produs") || "Produs");
+                const cant = parseInt(find("stoc") || find("cant") || 0);
+                if(!mode) {
+                    const ex = await db.produse.where('nume').equals(nume).first();
+                    if(ex) { await db.produse.update(ex.id, { cantitateInt: ex.cantitateInt + cant }); continue; }
+                }
+                await db.produse.add({ nume, cantitateInt: cant, cantitateFrac: 0, ambalaj: parseInt(find("amb") || 30), dataExpirare: String(find("exp") || ""), fapticInt: 0, fapticFrac: 0, pret: parseFloat(find("pret") || 0), ordine: Date.now() });
+            }
+            loadCache();
+        };
+        reader.readAsArrayBuffer(e.target.files[0]);
+    }
+
+    function doBackup() { db.produse.toArray().then(d => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(d)], {type:'application/json'})); a.download="Farma_Backup.json"; a.click(); }); }
+    async function restoreBackup(e) {
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            const data = JSON.parse(ev.target.result);
+            if(confirm("Ștergi datele actuale pentru Restore?")) { await db.produse.clear(); await db.produse.bulkAdd(data); loadCache(); }
+        };
+        reader.readAsText(e.target.files[0]);
+    }
+
+    function setSort(key) { sortDir = (sortKey === key && sortDir === 'asc') ? 'desc' : 'asc'; sortKey = key; render(); }
+
+    function render() {
+        const q = document.getElementById('search').value.toLowerCase();
+        const tbody = document.getElementById('tBody'), thead = document.getElementById('tHead');
+        let filtered = dataCache.filter(p => (p.nume||"").toLowerCase().includes(q) || (p.dataExpirare||"").includes(q));
+
+        filtered.sort((a, b) => {
+            let vA, vB;
+            if (sortKey === 'nume') { vA = a.nume.toLowerCase(); vB = b.nume.toLowerCase(); }
+            else if (sortKey === 'stoc') { vA = (a.cantitateInt * a.ambalaj) + a.cantitateFrac; vB = (b.cantitateInt * b.ambalaj) + b.cantitateFrac; }
+            else if (sortKey === 'faptic') { vA = (a.fapticInt * a.ambalaj) + a.fapticFrac; vB = (b.fapticInt * b.ambalaj) + b.fapticFrac; }
+            else if (sortKey === 'exp') {
+                const parseExp = s => { if(!s) return 99999999; const p = s.split('/'); return parseInt((p[2]||"2099") + (p[1]||"12") + (p[0]||"31")); };
+                vA = parseExp(a.dataExpirare); vB = parseExp(b.dataExpirare);
+            }
+            else if (sortKey === 'dif') {
+                vA = ((a.fapticInt||0)*a.ambalaj+(a.fapticFrac||0)) - (a.cantitateInt*a.ambalaj+a.cantitateFrac);
+                vB = ((b.fapticInt||0)*b.ambalaj+(b.fapticFrac||0)) - (b.cantitateInt*b.ambalaj+b.cantitateFrac);
+            }
+            else { vA = a.ordine; vB = b.ordine; }
+            return sortDir === 'asc' ? (vA > vB ? 1 : -1) : (vA < vB ? 1 : -1);
+        });
+
+        const display = filtered.slice(0, visibleItems);
+        const arw = k => sortKey === k ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+
+        if (!isInventory) {
+            thead.innerHTML = `<tr><th width="40px">➕</th><th onclick="setSort('nume')">PRODUS${arw('nume')}</th><th width="110px" onclick="setSort('stoc')">STOC</th><th width="110px" onclick="setSort('exp')">EXP${arw('exp')}</th><th width="75px">PREȚ</th><th width="40px">🗑️</th></tr>`;
+            tbody.innerHTML = display.map(p => `<tr>
+                <td><button class="btn-mini" onclick="duplicaProd(${p.id})">➕</button></td>
+                <td><input class="edit" value="${p.nume}" onchange="updateSilent(${p.id},'nume',this.value)">
+                    <div style="font-size:11px; color:#64748b">Emb: <input type="number" class="amb-input" value="${p.ambalaj}" onchange="updateSilent(${p.id},'ambalaj',this.value)"></div></td>
+                <td><input type="number" class="qty" value="${p.cantitateInt}" onfocus="clearZero(this)" onblur="restoreZero(this,${p.id},'cantitateInt')" onchange="updateSilent(${p.id},'cantitateInt',this.value)">+<input type="number" class="qty" style="color:blue" value="${p.cantitateFrac}" onfocus="clearZero(this)" onblur="restoreZero(this,${p.id},'cantitateFrac')" onchange="updateSilent(${p.id},'cantitateFrac',this.value)"></td>
+                <td><input class="exp-input" value="${p.dataExpirare||''}" oninput="formatDate(this,${p.id})"></td>
+                <td><input type="number" class="price-input" value="${(p.pret||0).toFixed(2)}" onfocus="clearZero(this)" onblur="restoreZero(this,${p.id},'pret')" onchange="updateSilent(${p.id},'pret',this.value)"></td>
+                <td><button onclick="del(${p.id})" style="border:none;background:none">🗑️</button></td>
+            </tr>`).join('');
+        } else {
+            thead.innerHTML = `<tr><th width="40px">➕</th><th onclick="setSort('nume')">PRODUS${arw('nume')}</th><th width="110px" onclick="setSort('faptic')">RAFT</th><th width="110px" onclick="setSort('exp')">EXP${arw('exp')}</th><th width="120px" onclick="setSort('dif')">DIF${arw('dif')}</th></tr>`;
+            tbody.innerHTML = display.map(p => `<tr>
+                <td><button class="btn-mini" onclick="duplicaProd(${p.id})">➕</button></td>
+                <td><b>${p.nume}</b><br><small>Sist: ${p.cantitateInt}+${p.cantitateFrac}</small></td>
+                <td><input type="number" class="qty" value="${p.fapticInt||0}" onfocus="clearZero(this)" onblur="restoreZero(this,${p.id},'fapticInt')" onchange="updateSilent(${p.id},'fapticInt',this.value)">+<input type="number" class="qty" style="color:blue" value="${p.fapticFrac||0}" onfocus="clearZero(this)" onblur="restoreZero(this,${p.id},'fapticFrac')" onchange="updateSilent(${p.id},'fapticFrac',this.value)"></td>
+                <td><input class="exp-input" style="font-size:13px !important" value="${p.dataExpirare||''}" oninput="formatDate(this,${p.id})"></td>
+                <td id="diff-${p.id}">${getDiffHTML(p)}</td>
+            </tr>`).join('');
+        }
+    }
+
+    function getDiffHTML(p) {
+        const sistTotal = (p.cantitateInt * p.ambalaj) + p.cantitateFrac;
+        const fapTotal = ((p.fapticInt || 0) * p.ambalaj) + (p.fapticFrac || 0);
+        const diffTotal = fapTotal - sistTotal;
+        if (diffTotal === 0) return `<span class="diff-tag">0</span>`;
+        const semn = diffTotal > 0 ? "+" : "";
+        return `<span class="diff-tag ${diffTotal < 0 ? 'minus' : 'plus'}">${semn}${Math.trunc(diffTotal / p.ambalaj)} c. ${semn}${diffTotal % p.ambalaj} u.</span>`;
+    }
+
+    function toggleMode() { isInventory = !isInventory; document.getElementById('mainBar').className = isInventory ? 'top-bar mod-inv' : 'top-bar'; document.getElementById('normalBtns').style.display = isInventory ? 'none' : 'flex'; document.getElementById('invBtns').style.display = isInventory ? 'flex' : 'none'; render(); }
+    async function finalizeazaInventar() { if(confirm("Actualizezi stocul scriptic?")) { for(let p of dataCache) { p.cantitateInt=p.fapticInt; p.cantitateFrac=p.fapticFrac; p.fapticInt=0; p.fapticFrac=0; await db.produse.update(p.id, {cantitateInt:p.cantitateInt, cantitateFrac:p.cantitateFrac, fapticInt:0, fapticFrac:0}); } toggleMode(); } }
+    async function resetRaft() { if(confirm("Resetati raftul la 0?")) { for(let p of dataCache) { p.fapticInt=0; p.fapticFrac=0; await db.produse.update(p.id, {fapticInt:0, fapticFrac:0}); } render(); } }
+    async function exportPDF() { const { jsPDF } = window.jspdf; const doc = new jsPDF(); const d = await db.produse.toArray(); doc.autoTable({ head: [['Produs', 'Stoc', 'Exp', 'Preț']], body: d.map(p => [p.nume, `${p.cantitateInt}+${p.cantitateFrac}`, p.dataExpirare, (p.pret||0).toFixed(2)]) }); doc.save("Raport.pdf"); }
+    async function exportExcel(n) { const d = await db.produse.toArray(); const ws = XLSX.utils.json_to_sheet(d.map(p => ({ "Produs": p.nume, "Ambalaj": p.ambalaj, "Stoc": `${p.cantitateInt}+${p.cantitateFrac}`, "Exp": p.dataExpirare, "Preț": p.pret }))); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Stoc"); XLSX.writeFile(wb, `${n}.xlsx`); }
+
+    loadCache();
+</script>
+</body>
+</html>
